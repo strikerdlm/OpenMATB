@@ -22,7 +22,7 @@ function toErrorMessage(error: unknown): string {
   return "Unexpected error";
 }
 
-function App(): JSX.Element {
+function App() {
   const [settingsResponse, setSettingsResponse] = useState<SettingsResponse | null>(
     null,
   );
