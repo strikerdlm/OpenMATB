@@ -49,6 +49,34 @@ You can now launch OpenMATB by executing the `main.py` file with python 3.9.
 python main.py
 ```
 
+## Functional launcher interface (Windows/Linux)
+
+OpenMATB now includes a functional desktop launcher interface (`launcher.py`) to manage configuration and run the app from one place.
+
+Features:
+- edits key values in `config.ini` (language, scenario, fullscreen, screen index, and UI options),
+- launches OpenMATB (`main.py`),
+- runs the scenario generator (`scenario_generator.py`),
+- can install Python dependencies from `requirements.txt`,
+- shows live process output in a built-in log panel.
+
+You can run a non-GUI environment check first:
+
+```bash
+python launcher.py --check
+```
+
+Then start the launcher UI:
+
+```bash
+python launcher.py
+```
+
+Notes:
+- Under Windows, replace `python` with `py` if needed.
+- For scenario selection, pick files located under `includes/scenarios`.
+- If your system does not have Tk installed, install the Python Tk package for your OS.
+
 ### Virtual environment
 
 If you want to create a dedicated python installation (so various python projects won’t overlap), you might want to install a virtual environment in your local repository. To do so, follow the instructions detailed on this [related page](https://docs.python.org/3.9/tutorial/venv.html).
