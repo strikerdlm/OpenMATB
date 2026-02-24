@@ -77,6 +77,42 @@ Notes:
 - For scenario selection, pick files located under `includes/scenarios`.
 - If your system does not have Tk installed, install the Python Tk package for your OS.
 
+## Web launcher interface (TypeScript + React)
+
+OpenMATB also includes a web launcher stack:
+- backend API: `web_launcher_api.py` (FastAPI),
+- frontend UI: `frontend/` (React + TypeScript + Vite).
+
+This web launcher manages the same `config.ini` values as `launcher.py` and can run:
+- OpenMATB (`main.py`),
+- scenario generator (`scenario_generator.py`),
+- dependency installation (`pip install -r requirements.txt`),
+- with bounded, live log output in the browser.
+
+### Start the web launcher
+
+1. Install Python dependencies:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+2. Start backend API (from repository root):
+
+```bash
+python3 -m uvicorn web_launcher_api:app --host 127.0.0.1 --port 8000
+```
+
+3. In another terminal, start the frontend dev server:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+4. Open the displayed local Vite URL (typically `http://127.0.0.1:5173`).
+
 ### Virtual environment
 
 If you want to create a dedicated python installation (so various python projects won’t overlap), you might want to install a virtual environment in your local repository. To do so, follow the instructions detailed on this [related page](https://docs.python.org/3.9/tutorial/venv.html).
