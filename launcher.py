@@ -26,8 +26,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Deque
 
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+except ModuleNotFoundError:
+    tk = None
+    filedialog = None
+    messagebox = None
+    ttk = None
 
 
 OPENMATB_SECTION = "Openmatb"
@@ -42,6 +48,8 @@ MAX_SCREEN_INDEX = 16
 PACKAGE_TO_MODULE = {
     "pyparallel": "parallel",
 }
+
+TCL_ERROR_TYPE = tk.TclError if tk is not None else RuntimeError
 
 
 @dataclass(slots=True, frozen=True)
@@ -279,6 +287,12 @@ class LauncherUI:
     """Tkinter-based launcher and process manager."""
 
     def __init__(self, repo_root: Path) -> None:
+        if tk is None or ttk is None or filedialog is None or messagebox is None:
+            raise RuntimeError(
+                "Tkinter is not installed. Install Tk support (for example, python3-tk) "
+                "to use the desktop launcher interface."
+            )
+
         self.repo_root = repo_root
         self.config_service = ConfigService(repo_root)
 
@@ -708,7 +722,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         app = LauncherUI(repo_root)
-    except (ValueError, tk.TclError) as exc:
+    except (ValueError, RuntimeError, TCL_ERROR_TYPE) as exc:
         print(f"Launcher startup failed: {exc}", file=sys.stderr)
         return 1
 
