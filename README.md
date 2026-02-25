@@ -89,6 +89,18 @@ This web launcher manages the same `config.ini` values as `launcher.py` and can 
 - dependency installation (`pip install -r requirements.txt`),
 - with bounded, live log output in the browser.
 
+### Tactical console capabilities
+
+The current frontend provides a mission-oriented console experience with:
+- a modern operations dashboard (readiness state, sync status, telemetry state, and mission metrics),
+- scenario intelligence cards generated from detected scenario files (category + intensity hints),
+- configuration hardening with preflight validation before save/launch/generate/install,
+- bounded action controls (unsafe actions are blocked when process state or validation is not safe),
+- resilient API handling (timeouts + bounded retries for GET endpoints),
+- rolling command timeline and process log surface for rapid operator feedback.
+
+These controls are designed to reduce operator error and increase predictability during repeated training or evaluation runs.
+
 ### Start the web launcher
 
 1. Install Python dependencies:
@@ -112,6 +124,19 @@ npm run dev
 ```
 
 4. Open the displayed local Vite URL (typically `http://127.0.0.1:5173`).
+
+5. Optional strict build check (recommended before merging):
+
+```bash
+cd frontend
+npm run build
+```
+
+### Frontend environment and secrets
+
+- Do not hardcode API keys, tokens, or other secrets in TypeScript/JavaScript source files.
+- Store sensitive values in environment files (for example, `.env.local`) and ensure those files are ignored by Git before committing.
+- For military or regulated deployments, use a secure secret manager and environment injection at runtime rather than repository-stored credentials.
 
 ### Virtual environment
 
