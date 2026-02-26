@@ -24,13 +24,23 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-function parseJsonResponse(payload: string, path: string): unknown {
-  if (payload.trim().length === 0) {
+function parseResponseBody(payload: string, contentType: string, path: string): unknown {
+  const trimmedPayload = payload.trim();
+  if (trimmedPayload.length === 0) {
     return null;
   }
 
+  const normalizedContentType = contentType.toLowerCase();
+  const expectsJson =
+    normalizedContentType.includes("application/json") ||
+    trimmedPayload.startsWith("{") ||
+    trimmedPayload.startsWith("[");
+  if (!expectsJson) {
+    return trimmedPayload;
+  }
+
   try {
-    return JSON.parse(payload) as unknown;
+    return JSON.parse(trimmedPayload) as unknown;
   } catch {
     throw new Error(`Received malformed JSON from ${path}`);
   }
@@ -54,7 +64,11 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
         signal: controller.signal,
       });
       const textBody = await response.text();
-      const parsed = parseJsonResponse(textBody, path);
+      const parsed = parseResponseBody(
+        textBody,
+        response.headers.get("content-type") ?? "",
+        path,
+      );
 
       if (!response.ok) {
         const detail = extractErrorDetail(parsed);
@@ -65,6 +79,10 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
           continue;
         }
         throw new Error(detail ?? fallback);
+      }
+
+      if (parsed === null || typeof parsed !== "object") {
+        throw new Error(`Received unexpected response format from ${path}`);
       }
 
       return parsed as T;
@@ -93,6 +111,9 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function extractErrorDetail(payload: unknown): string | null {
+  if (typeof payload === "string" && payload.length > 0) {
+    return payload;
+  }
   if (payload === null || typeof payload !== "object") {
     return null;
   }
@@ -100,6 +121,12 @@ function extractErrorDetail(payload: unknown): string | null {
   const candidate = payload as Record<string, unknown>;
   if (typeof candidate.detail === "string" && candidate.detail.length > 0) {
     return candidate.detail;
+  }
+  if (typeof candidate.error === "string" && candidate.error.length > 0) {
+    return candidate.error;
+  }
+  if (typeof candidate.message === "string" && candidate.message.length > 0) {
+    return candidate.message;
   }
   return null;
 }
