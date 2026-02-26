@@ -212,18 +212,19 @@ class MetarService:
         """Return one METAR report per session, with optional forced refresh."""
         normalized_session = self._normalize_session_id(session_id)
         normalized_scenario = self._normalize_scenario_path(scenario_path)
+        cache_key = f"{normalized_session}|{normalized_scenario}"
 
         if not force_refresh:
             with self._lock:
-                cached = self._cache.get(normalized_session)
+                cached = self._cache.get(cache_key)
                 if cached is not None:
-                    self._cache.move_to_end(normalized_session)
+                    self._cache.move_to_end(cache_key)
                     return cached.to_payload(normalized_session)
 
         observation = self._build_observation(normalized_session, normalized_scenario)
         with self._lock:
-            self._cache[normalized_session] = observation
-            self._cache.move_to_end(normalized_session)
+            self._cache[cache_key] = observation
+            self._cache.move_to_end(cache_key)
             while len(self._cache) > self._cache_size:
                 self._cache.popitem(last=False)
         return observation.to_payload(normalized_session)
