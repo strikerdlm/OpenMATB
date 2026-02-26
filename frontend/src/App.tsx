@@ -21,6 +21,8 @@ const MAX_SCREEN_INDEX = 16;
 const MAX_EVENT_COUNT = 12;
 const DIAL_START_ANGLE = -130;
 const DIAL_SWEEP_ANGLE = 260;
+const ALL_SCENARIO_CATEGORIES = "All categories";
+const TELEMETRY_RETRY_PREFIX = "Telemetry retry in progress:";
 
 type LauncherAction = "install" | "generate" | "launch";
 type UiEventKind = "info" | "warning" | "action" | "error";
@@ -432,12 +434,20 @@ function inferScenarioIntensity(path: string): "Low" | "Moderate" | "High" {
 }
 
 function buildScenarioInsights(paths: string[]): ScenarioInsight[] {
-  return paths.map((path) => ({
-    path,
-    label: formatScenarioLabel(path),
-    category: inferScenarioCategory(path),
-    intensity: inferScenarioIntensity(path),
-  }));
+  return paths
+    .map((path) => ({
+      path,
+      label: formatScenarioLabel(path),
+      category: inferScenarioCategory(path),
+      intensity: inferScenarioIntensity(path),
+    }))
+    .sort((left, right) => {
+      const categoryOrder = left.category.localeCompare(right.category);
+      if (categoryOrder !== 0) {
+        return categoryOrder;
+      }
+      return left.label.localeCompare(right.label);
+    });
 }
 
 function formatClock(timestampMs: number | null): string {
@@ -469,8 +479,14 @@ function App() {
   const [pollFailureCount, setPollFailureCount] = useState<number>(0);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [uiEvents, setUiEvents] = useState<UiEvent[]>([]);
+  const [scenarioQuery, setScenarioQuery] = useState<string>("");
+  const [scenarioCategoryFilter, setScenarioCategoryFilter] =
+    useState<string>(ALL_SCENARIO_CATEGORIES);
   const eventIdRef = useRef<number>(0);
   const previousPollFailureRef = useRef<number>(0);
+  const processRequestInFlightRef = useRef<boolean>(false);
+  const metarRequestIdRef = useRef<number>(0);
+  const metarSourceRef = useRef<MetarPayload["source"] | null>(null);
 
   const appendUiEvent = useCallback((kind: UiEventKind, message: string): void => {
     eventIdRef.current += 1;
@@ -502,42 +518,66 @@ function App() {
   }, [appendUiEvent]);
 
   const refreshProcess = useCallback(async (): Promise<void> => {
+    if (processRequestInFlightRef.current) {
+      return;
+    }
+
+    processRequestInFlightRef.current = true;
     try {
       const snapshot = await getProcess();
       setProcessSnapshot(snapshot);
       setPollFailureCount(0);
+      setInfoMessage((previous) =>
+        previous.startsWith(TELEMETRY_RETRY_PREFIX) ? "Telemetry feed restored." : previous,
+      );
     } catch (error) {
       setPollFailureCount((previous) => Math.min(previous + 1, 8));
       setInfoMessage((previous) =>
         previous.length > 0
           ? previous
-          : `Telemetry retry in progress: ${toErrorMessage(error)}`,
+          : `${TELEMETRY_RETRY_PREFIX} ${toErrorMessage(error)}`,
       );
+    } finally {
+      processRequestInFlightRef.current = false;
     }
   }, []);
 
   const refreshMetar = useCallback(
     async (scenarioPath: string, forceRefresh: boolean): Promise<void> => {
+      const requestId = metarRequestIdRef.current + 1;
+      metarRequestIdRef.current = requestId;
       setIsMetarBusy(true);
       setMetarErrorMessage("");
       try {
         const payload = await getMetar(sessionId, scenarioPath, forceRefresh);
+        if (requestId !== metarRequestIdRef.current) {
+          return;
+        }
         setMetarPayload(payload);
         setLastMetarSyncAt(Date.now());
-        if (payload.source === "web") {
-          appendUiEvent("info", `Live METAR loaded from ${payload.station}.`);
-        } else {
-          appendUiEvent(
-            "warning",
-            `Network METAR unavailable. Generated fallback issued for ${payload.station}.`,
-          );
+        const previousSource = metarSourceRef.current;
+        metarSourceRef.current = payload.source;
+        if (previousSource !== payload.source || forceRefresh) {
+          if (payload.source === "web") {
+            appendUiEvent("info", `Live METAR loaded from ${payload.station}.`);
+          } else {
+            appendUiEvent(
+              "warning",
+              `Network METAR unavailable. Generated fallback issued for ${payload.station}.`,
+            );
+          }
         }
       } catch (error) {
+        if (requestId !== metarRequestIdRef.current) {
+          return;
+        }
         const detail = `METAR update failed: ${toErrorMessage(error)}`;
         setMetarErrorMessage(detail);
         appendUiEvent("error", detail);
       } finally {
-        setIsMetarBusy(false);
+        if (requestId === metarRequestIdRef.current) {
+          setIsMetarBusy(false);
+        }
       }
     },
     [appendUiEvent, sessionId],
@@ -549,19 +589,61 @@ function App() {
     setInfoMessage("");
 
     try {
-      const [settings, process, check] = await Promise.all([
+      const [settingsResult, processResult, checkResult] = await Promise.allSettled([
         getSettings(),
         getProcess(),
         getSystemCheck(),
       ]);
+
+      if (settingsResult.status !== "fulfilled") {
+        throw settingsResult.reason;
+      }
+
+      const settings = settingsResult.value;
       setSettingsResponse(settings);
       setDraftSettings(settings.settings);
-      setProcessSnapshot(process);
-      setSystemCheck(check);
+
+      if (processResult.status === "fulfilled") {
+        setProcessSnapshot(processResult.value);
+        setPollFailureCount(0);
+      } else {
+        const processDetail = toErrorMessage(processResult.reason);
+        setPollFailureCount((previous) => Math.min(previous + 1, 8));
+        setProcessSnapshot((previous) => {
+          if (previous !== null) {
+            return previous;
+          }
+          return {
+            running: false,
+            current_action: null,
+            last_exit_code: null,
+            status_message: `Process telemetry unavailable: ${processDetail}`,
+            logs: [],
+          };
+        });
+        appendUiEvent("warning", `Process telemetry unavailable during sync: ${processDetail}`);
+      }
+
+      if (checkResult.status === "fulfilled") {
+        setSystemCheck(checkResult.value);
+      } else {
+        const checkDetail = toErrorMessage(checkResult.reason);
+        setSystemCheck({
+          config_exists: false,
+          available_languages: settings.available_languages,
+          available_scenarios: settings.available_scenarios,
+          missing_packages: [],
+        });
+        appendUiEvent("warning", `System check unavailable during sync: ${checkDetail}`);
+      }
+
       setIsLoaded(true);
-      setPollFailureCount(0);
       setLastSyncedAt(Date.now());
-      setInfoMessage("Launcher data synchronized.");
+      if (processResult.status === "fulfilled" && checkResult.status === "fulfilled") {
+        setInfoMessage("Launcher data synchronized.");
+      } else {
+        setInfoMessage("Launcher data synchronized with partial diagnostics.");
+      }
       appendUiEvent("info", "Launcher data synchronized.");
     } catch (error) {
       const detail = `Failed to load launcher data: ${toErrorMessage(error)}`;
@@ -573,6 +655,14 @@ function App() {
   }, [appendUiEvent]);
 
   const selectedScenarioPath = draftSettings?.scenario_path ?? "";
+
+  useEffect(() => {
+    metarRequestIdRef.current += 1;
+    metarSourceRef.current = null;
+    setMetarPayload(null);
+    setMetarErrorMessage("");
+    setLastMetarSyncAt(null);
+  }, [selectedScenarioPath]);
 
   useEffect(() => {
     void loadPageData();
@@ -671,6 +761,40 @@ function App() {
     }
     return buildScenarioInsights(settingsResponse.available_scenarios);
   }, [settingsResponse]);
+
+  const scenarioCategoryOptions = useMemo((): string[] => {
+    const categories = new Set<string>();
+    scenarioInsights.forEach((scenario) => {
+      categories.add(scenario.category);
+    });
+    return [ALL_SCENARIO_CATEGORIES, ...Array.from(categories).sort((left, right) => left.localeCompare(right))];
+  }, [scenarioInsights]);
+
+  useEffect(() => {
+    if (!scenarioCategoryOptions.includes(scenarioCategoryFilter)) {
+      setScenarioCategoryFilter(ALL_SCENARIO_CATEGORIES);
+    }
+  }, [scenarioCategoryFilter, scenarioCategoryOptions]);
+
+  const normalizedScenarioQuery = useMemo((): string => {
+    return scenarioQuery.trim().toLowerCase();
+  }, [scenarioQuery]);
+
+  const visibleScenarioInsights = useMemo((): ScenarioInsight[] => {
+    return scenarioInsights.filter((scenario) => {
+      const categoryMatches =
+        scenarioCategoryFilter === ALL_SCENARIO_CATEGORIES ||
+        scenario.category === scenarioCategoryFilter;
+      if (!categoryMatches) {
+        return false;
+      }
+      if (normalizedScenarioQuery.length === 0) {
+        return true;
+      }
+      const searchable = `${scenario.path} ${scenario.label} ${scenario.category} ${scenario.intensity}`.toLowerCase();
+      return searchable.includes(normalizedScenarioQuery);
+    });
+  }, [normalizedScenarioQuery, scenarioCategoryFilter, scenarioInsights]);
 
   const selectedScenarioInsight = useMemo((): ScenarioInsight | null => {
     if (selectedScenarioPath.length === 0) {
@@ -830,6 +954,37 @@ function App() {
     }
   }, [appendUiEvent, saveDraftSettings]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const isSaveShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s";
+      if (!isSaveShortcut) {
+        return;
+      }
+      event.preventDefault();
+      if (disableFormControls || !hasUnsavedChanges || hasValidationErrors) {
+        return;
+      }
+      void onSaveClicked();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [disableFormControls, hasUnsavedChanges, hasValidationErrors, onSaveClicked]);
+
+  useEffect(() => {
+    if (infoMessage.length === 0) {
+      return;
+    }
+    const timerId = window.setTimeout(() => {
+      setInfoMessage("");
+    }, 5200);
+    return () => {
+      window.clearTimeout(timerId);
+    };
+  }, [infoMessage]);
+
   const telemetryLabel = useMemo((): string => {
     if (pollFailureCount === 0) {
       return "Telemetry live";
@@ -873,7 +1028,11 @@ function App() {
         <section className="panel panel-hero loading-panel">
           <h1>OpenMATB Tactical Console</h1>
           <p>Synchronizing launcher services and scenario inventory...</p>
-          {errorMessage.length > 0 ? <p className="error">{errorMessage}</p> : null}
+          {errorMessage.length > 0 ? (
+            <p className="error" role="alert">
+              {errorMessage}
+            </p>
+          ) : null}
           <div className="action-row">
             <button
               type="button"
@@ -927,10 +1086,18 @@ function App() {
         </div>
       </section>
 
-      {infoMessage.length > 0 ? <p className="banner info">{infoMessage}</p> : null}
-      {errorMessage.length > 0 ? <p className="banner error">{errorMessage}</p> : null}
+      {infoMessage.length > 0 ? (
+        <p className="banner info" role="status" aria-live="polite">
+          {infoMessage}
+        </p>
+      ) : null}
+      {errorMessage.length > 0 ? (
+        <p className="banner error" role="alert" aria-live="assertive">
+          {errorMessage}
+        </p>
+      ) : null}
       {pollFailureCount > 0 ? (
-        <p className="banner warning">
+        <p className="banner warning" role="status" aria-live="polite">
           Live process telemetry is delayed. Automatic retry is active.
         </p>
       ) : null}
@@ -991,6 +1158,9 @@ function App() {
                   <strong>Station:</strong> {metarPayload.station}
                 </p>
                 <p>
+                  <strong>Profile:</strong> {metarPayload.scenario_profile}
+                </p>
+                <p>
                   <strong>Category:</strong> {metarPayload.flight_category}
                 </p>
                 <p>
@@ -1043,34 +1213,89 @@ function App() {
           <p className="hint">
             Missing Python packages: <strong>{missingPackagesLabel}</strong>
           </p>
+          <div className="scenario-toolbar">
+            <label>
+              Search
+              <input
+                type="search"
+                value={scenarioQuery}
+                onChange={(event) => {
+                  setScenarioQuery(event.target.value);
+                }}
+                placeholder="Find scenario by name or path..."
+                spellCheck={false}
+              />
+            </label>
+            <label>
+              Category
+              <select
+                value={scenarioCategoryFilter}
+                onChange={(event) => {
+                  setScenarioCategoryFilter(event.target.value);
+                }}
+              >
+                {scenarioCategoryOptions.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="text-action"
+              onClick={() => {
+                setScenarioQuery("");
+                setScenarioCategoryFilter(ALL_SCENARIO_CATEGORIES);
+              }}
+              disabled={
+                scenarioQuery.length === 0 &&
+                scenarioCategoryFilter === ALL_SCENARIO_CATEGORIES
+              }
+            >
+              Clear filters
+            </button>
+          </div>
+          <p className="hint">
+            Showing {visibleScenarioInsights.length} of {scenarioInsights.length} scenarios.
+          </p>
           <div className="scenario-grid">
-            {scenarioInsights.map((scenario) => {
-              const isSelected = scenario.path === draftSettings.scenario_path;
-              return (
-                <button
-                  key={scenario.path}
-                  type="button"
-                  className={`scenario-card${isSelected ? " selected" : ""}`}
-                  disabled={disableFormControls}
-                  onClick={() => {
-                    updateSetting("scenario_path", scenario.path);
-                  }}
-                >
-                  <span className="scenario-path">{scenario.path}</span>
-                  <strong>{scenario.label}</strong>
-                  <span className="hint">
-                    Category: {scenario.category} | Intensity: {scenario.intensity}
-                  </span>
-                </button>
-              );
-            })}
+            {visibleScenarioInsights.length > 0 ? (
+              visibleScenarioInsights.map((scenario) => {
+                const isSelected = scenario.path === draftSettings.scenario_path;
+                return (
+                  <button
+                    key={scenario.path}
+                    type="button"
+                    className={`scenario-card${isSelected ? " selected" : ""}`}
+                    aria-pressed={isSelected}
+                    disabled={disableFormControls}
+                    onClick={() => {
+                      updateSetting("scenario_path", scenario.path);
+                    }}
+                  >
+                    <span className="scenario-path">{scenario.path}</span>
+                    <strong>{scenario.label}</strong>
+                    <span className="hint">
+                      Category: {scenario.category} | Intensity: {scenario.intensity}
+                    </span>
+                  </button>
+                );
+              })
+            ) : (
+              <p className="scenario-empty hint">
+                No scenarios match the current search and category filters.
+              </p>
+            )}
           </div>
         </article>
 
         <article className="panel">
           <h2>Configuration Controls</h2>
           <p className="hint">
-            {hasUnsavedChanges ? "Unsaved changes pending." : "Configuration is synchronized."}
+            {hasUnsavedChanges
+              ? "Unsaved changes pending. Press Ctrl/Cmd + S to save quickly."
+              : "Configuration is synchronized. Press Ctrl/Cmd + S for quick save."}
           </p>
 
           <div className="form-grid">
@@ -1272,7 +1497,7 @@ function App() {
             {processSnapshot?.last_exit_code ?? "n/a"}
           </p>
           <p className="hint">Latest {processSnapshot?.logs.length ?? 0} log lines retained.</p>
-          <pre className="log-area">
+          <pre className="log-area" tabIndex={0} aria-label="Process log output">
             {processSnapshot !== null && processSnapshot.logs.length > 0
               ? processSnapshot.logs.join("\n")
               : "No process logs yet."}
@@ -1282,7 +1507,7 @@ function App() {
         <article className="panel">
           <h2>Command Timeline</h2>
           {uiEvents.length > 0 ? (
-            <ul className="event-list">
+            <ul className="event-list" aria-live="polite">
               {uiEvents.map((event) => (
                 <li key={event.id} className={`event-item ${event.kind}`}>
                   <span className="event-time">{formatClock(event.createdAt)}</span>
