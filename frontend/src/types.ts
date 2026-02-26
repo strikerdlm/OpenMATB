@@ -29,3 +29,25 @@ export interface SystemCheckPayload {
   available_scenarios: string[];
   missing_packages: string[];
 }
+
+export type MetarSource = "web" | "generated";
+export type FlightCategory = "VFR" | "MVFR" | "IFR" | "LIFR";
+
+export interface MetarPayload {
+  session_id: string;
+  source: MetarSource;
+  station: string;
+  scenario_profile: string;
+  flight_category: FlightCategory;
+  metar: string;
+  issued_at: string;
+  fetched_at: string;
+  wind_degrees: number;
+  wind_speed_kt: number;
+  gust_kt: number | null;
+  visibility_sm: number;
+  ceiling_ft: number | null;
+  temperature_c: number;
+  dewpoint_c: number;
+  altimeter_inhg: number;
+}
