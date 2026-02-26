@@ -97,9 +97,35 @@ The current frontend provides a mission-oriented console experience with:
 - configuration hardening with preflight validation before save/launch/generate/install,
 - bounded action controls (unsafe actions are blocked when process state or validation is not safe),
 - resilient API handling (timeouts + bounded retries for GET endpoints),
-- rolling command timeline and process log surface for rapid operator feedback.
+- rolling command timeline and process log surface for rapid operator feedback,
+- a pilot-focused instrument cluster with richer dial graphics,
+- scenario-dependent aircraft gauge presets (e.g., training, communications-heavy, combat-like),
+- a session-scoped METAR distraction panel with decoded weather values and periodic refresh.
 
 These controls are designed to reduce operator error and increase predictability during repeated training or evaluation runs.
+
+### METAR distraction behavior
+
+The tactical web console now includes a METAR distraction feed intended to emulate cockpit weather interruptions:
+
+- each browser session receives its own METAR snapshot (session-scoped identity),
+- the backend first attempts to load a real METAR from the web (public NWS METAR station feed),
+- if web access is unavailable, the backend automatically generates a syntactically valid fallback METAR,
+- weather values (wind, visibility, ceiling, pressure, temperature) are decoded and displayed next to the raw METAR string,
+- cockpit dials are influenced by the current METAR payload so weather context remains visible to the operator.
+
+This design keeps the interface usable in both connected and disconnected environments.
+
+### Scenario cockpit profiles
+
+Gauge styling is now scenario-aware:
+
+- **MWE / training** scenarios favor lighter aircraft profiles,
+- **communications-heavy** scenarios shift to IFR-style radio workload profiles,
+- **combat/high-reliability** scenarios switch to high-energy intercept style profiles,
+- **night operations** scenarios bias the cluster toward stabilized approach behaviors.
+
+See `Docs/Manual.md` for practical examples and additional enhancement ideas.
 
 ### Start the web launcher
 
