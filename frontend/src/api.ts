@@ -1,4 +1,5 @@
 import type {
+  MetarPayload,
   ProcessSnapshot,
   SettingsPayload,
   SettingsResponse,
@@ -131,4 +132,17 @@ export async function postAction(action: string): Promise<ProcessSnapshot> {
   return requestJson<ProcessSnapshot>(`/api/actions/${action}`, {
     method: "POST",
   });
+}
+
+export async function getMetar(
+  sessionId: string,
+  scenarioPath: string,
+  forceRefresh: boolean,
+): Promise<MetarPayload> {
+  const queryParams = new URLSearchParams({
+    session_id: sessionId,
+    scenario_path: scenarioPath,
+    force_refresh: String(forceRefresh),
+  });
+  return requestJson<MetarPayload>(`/api/distractions/metar?${queryParams.toString()}`);
 }

@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getProcess, getSettings, getSystemCheck, postAction, saveSettings } from "./api";
+import {
+  getMetar,
+  getProcess,
+  getSettings,
+  getSystemCheck,
+  postAction,
+  saveSettings,
+} from "./api";
 import type {
+  MetarPayload,
   ProcessSnapshot,
   SettingsPayload,
   SettingsResponse,
@@ -8,8 +16,11 @@ import type {
 } from "./types";
 
 const POLL_INTERVAL_MS = 1500;
+const METAR_REFRESH_INTERVAL_MS = 90_000;
 const MAX_SCREEN_INDEX = 16;
 const MAX_EVENT_COUNT = 12;
+const DIAL_START_ANGLE = -130;
+const DIAL_SWEEP_ANGLE = 260;
 
 type LauncherAction = "install" | "generate" | "launch";
 type UiEventKind = "info" | "warning" | "action" | "error";
@@ -33,6 +44,293 @@ interface ScenarioInsight {
   label: string;
   category: string;
   intensity: "Low" | "Moderate" | "High";
+}
+
+interface GaugeBand {
+  startRatio: number;
+  endRatio: number;
+  className: string;
+}
+
+interface CockpitGauge {
+  key: string;
+  label: string;
+  units: string;
+  min: number;
+  max: number;
+  value: number;
+  precision?: number;
+  bands: GaugeBand[];
+}
+
+interface CockpitProfile {
+  aircraftName: string;
+  missionMode: string;
+  gauges: CockpitGauge[];
+}
+
+function clamp(value: number, minValue: number, maxValue: number): number {
+  if (value < minValue) {
+    return minValue;
+  }
+  if (value > maxValue) {
+    return maxValue;
+  }
+  return value;
+}
+
+function createSessionId(): string {
+  if (typeof window.crypto?.randomUUID === "function") {
+    return window.crypto.randomUUID();
+  }
+  const timestamp = Date.now().toString(36);
+  const randomPart = Math.random().toString(36).slice(2, 10);
+  return `${timestamp}-${randomPart}`;
+}
+
+function polarPoint(radius: number, angleDegrees: number): { x: number; y: number } {
+  const radians = ((angleDegrees - 90) * Math.PI) / 180;
+  return {
+    x: 90 + radius * Math.cos(radians),
+    y: 90 + radius * Math.sin(radians),
+  };
+}
+
+function dialArcPath(startRatio: number, endRatio: number, radius: number): string {
+  const startAngle = DIAL_START_ANGLE + DIAL_SWEEP_ANGLE * startRatio;
+  const endAngle = DIAL_START_ANGLE + DIAL_SWEEP_ANGLE * endRatio;
+  const startPoint = polarPoint(radius, startAngle);
+  const endPoint = polarPoint(radius, endAngle);
+  const largeArc = endAngle - startAngle > 180 ? 1 : 0;
+  return [
+    "M",
+    startPoint.x.toFixed(2),
+    startPoint.y.toFixed(2),
+    "A",
+    radius,
+    radius,
+    0,
+    largeArc,
+    1,
+    endPoint.x.toFixed(2),
+    endPoint.y.toFixed(2),
+  ].join(" ");
+}
+
+function formatDialValue(value: number, precision: number | undefined): string {
+  const digits = precision ?? 0;
+  return value.toFixed(digits);
+}
+
+function normalizeScenarioSeed(path: string): number {
+  let hash = 0;
+  for (let index = 0; index < path.length; index += 1) {
+    hash = (hash * 31 + path.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function defaultGaugeBands(): GaugeBand[] {
+  return [
+    { startRatio: 0, endRatio: 0.68, className: "dial-band-safe" },
+    { startRatio: 0.68, endRatio: 0.87, className: "dial-band-caution" },
+    { startRatio: 0.87, endRatio: 1, className: "dial-band-danger" },
+  ];
+}
+
+function metarDrivenBands(): GaugeBand[] {
+  return [
+    { startRatio: 0, endRatio: 0.55, className: "dial-band-danger" },
+    { startRatio: 0.55, endRatio: 0.8, className: "dial-band-caution" },
+    { startRatio: 0.8, endRatio: 1, className: "dial-band-safe" },
+  ];
+}
+
+function buildCockpitProfile(
+  selectedScenario: ScenarioInsight | null,
+  metarPayload: MetarPayload | null,
+): CockpitProfile {
+  const category = selectedScenario?.category ?? "General";
+  const intensity = selectedScenario?.intensity ?? "Low";
+  const seed = normalizeScenarioSeed(selectedScenario?.path ?? "default");
+
+  let aircraftName = "C172 Training Deck";
+  let missionMode = "Baseline handling and instrument scan.";
+  let baseAirspeed = 105;
+  let baseAltitude = 3200;
+  let baseVerticalSpeed = 200;
+
+  if (category === "Combat") {
+    aircraftName = "F16 Intercept Deck";
+    missionMode = "High-energy intercept and rapid scan transitions.";
+    baseAirspeed = 390;
+    baseAltitude = 19000;
+    baseVerticalSpeed = 1800;
+  } else if (category === "Night Ops") {
+    aircraftName = "B737 Night Approach";
+    missionMode = "Stabilized descent under reduced visual cues.";
+    baseAirspeed = 165;
+    baseAltitude = 7800;
+    baseVerticalSpeed = -700;
+  } else if (category === "Communications") {
+    aircraftName = "A320 IFR Radio Workload";
+    missionMode = "Avionics and ATC prioritization under workload.";
+    baseAirspeed = 245;
+    baseAltitude = 11200;
+    baseVerticalSpeed = 350;
+  } else if (category === "MWE") {
+    aircraftName = "C152 Familiarization";
+    missionMode = "Fundamental workload balancing for beginners.";
+    baseAirspeed = 92;
+    baseAltitude = 2500;
+    baseVerticalSpeed = 120;
+  }
+
+  const intensityMultiplier = intensity === "High" ? 1.22 : intensity === "Moderate" ? 1 : 0.86;
+  const heading = (seed % 360) + (metarPayload?.wind_degrees ?? 0) * 0.08;
+  const windComponent = metarPayload?.wind_speed_kt ?? 8;
+  const visibilitySm = metarPayload?.visibility_sm ?? 10;
+  const ceilingFt = metarPayload?.ceiling_ft ?? 9000;
+
+  const gauges: CockpitGauge[] = [
+    {
+      key: "airspeed",
+      label: "Airspeed",
+      units: "KT",
+      min: 40,
+      max: 520,
+      value: clamp(baseAirspeed * intensityMultiplier + windComponent * 0.7, 40, 520),
+      bands: defaultGaugeBands(),
+    },
+    {
+      key: "altitude",
+      label: "Altitude",
+      units: "FT",
+      min: 0,
+      max: 42000,
+      value: clamp(baseAltitude + (seed % 1700) + windComponent * 35, 0, 42000),
+      bands: defaultGaugeBands(),
+    },
+    {
+      key: "vertical-speed",
+      label: "V/S",
+      units: "FT/MIN",
+      min: -3000,
+      max: 3000,
+      value: clamp(baseVerticalSpeed + (seed % 500) - 250, -3000, 3000),
+      bands: [
+        { startRatio: 0, endRatio: 0.2, className: "dial-band-danger" },
+        { startRatio: 0.2, endRatio: 0.35, className: "dial-band-caution" },
+        { startRatio: 0.35, endRatio: 0.65, className: "dial-band-safe" },
+        { startRatio: 0.65, endRatio: 0.8, className: "dial-band-caution" },
+        { startRatio: 0.8, endRatio: 1, className: "dial-band-danger" },
+      ],
+    },
+    {
+      key: "heading",
+      label: "Heading",
+      units: "DEG",
+      min: 0,
+      max: 360,
+      value: clamp(heading, 0, 360),
+      bands: defaultGaugeBands(),
+    },
+    {
+      key: "metar-wind",
+      label: "METAR Wind",
+      units: "KT",
+      min: 0,
+      max: 60,
+      value: clamp(windComponent, 0, 60),
+      bands: defaultGaugeBands(),
+    },
+    {
+      key: "metar-visibility",
+      label: "Visibility",
+      units: "SM",
+      min: 0,
+      max: 12,
+      value: clamp(visibilitySm, 0, 12),
+      precision: 1,
+      bands: metarDrivenBands(),
+    },
+    {
+      key: "metar-ceiling",
+      label: "Ceiling",
+      units: "FT",
+      min: 0,
+      max: 12000,
+      value: clamp(ceilingFt, 0, 12000),
+      bands: metarDrivenBands(),
+    },
+    {
+      key: "metar-altimeter",
+      label: "Altimeter",
+      units: "INHG",
+      min: 28,
+      max: 31,
+      value: clamp(metarPayload?.altimeter_inhg ?? 29.92, 28, 31),
+      precision: 2,
+      bands: defaultGaugeBands(),
+    },
+  ];
+
+  return {
+    aircraftName,
+    missionMode,
+    gauges,
+  };
+}
+
+function InstrumentDial({ gauge }: { gauge: CockpitGauge }) {
+  const ratio = clamp((gauge.value - gauge.min) / (gauge.max - gauge.min), 0, 1);
+  const needleAngle = DIAL_START_ANGLE + ratio * DIAL_SWEEP_ANGLE;
+  const ticks = Array.from({ length: 11 }, (_, index) => {
+    const tickRatio = index / 10;
+    const angle = DIAL_START_ANGLE + tickRatio * DIAL_SWEEP_ANGLE;
+    const outer = polarPoint(73, angle);
+    const inner = polarPoint(index % 2 === 0 ? 56 : 62, angle);
+    return {
+      key: index,
+      className: index % 2 === 0 ? "dial-tick-major" : "dial-tick-minor",
+      inner,
+      outer,
+    };
+  });
+  const needleTip = polarPoint(52, needleAngle);
+
+  return (
+    <article className="instrument-dial">
+      <div className="dial-face">
+        <svg viewBox="0 0 180 180" aria-hidden="true">
+          <circle className="dial-ring" cx="90" cy="90" r="74" />
+          {gauge.bands.map((band) => (
+            <path
+              key={`${gauge.key}-${band.className}-${band.startRatio}`}
+              className={`dial-band ${band.className}`}
+              d={dialArcPath(band.startRatio, band.endRatio, 66)}
+            />
+          ))}
+          {ticks.map((tick) => (
+            <line
+              key={`${gauge.key}-tick-${tick.key}`}
+              className={tick.className}
+              x1={tick.inner.x}
+              y1={tick.inner.y}
+              x2={tick.outer.x}
+              y2={tick.outer.y}
+            />
+          ))}
+          <line className="dial-needle" x1="90" y1="90" x2={needleTip.x} y2={needleTip.y} />
+          <circle className="dial-hub" cx="90" cy="90" r="5.5" />
+        </svg>
+      </div>
+      <p className="dial-label">{gauge.label}</p>
+      <p className="dial-value">
+        {formatDialValue(gauge.value, gauge.precision)} <span>{gauge.units}</span>
+      </p>
+    </article>
+  );
 }
 
 function toErrorMessage(error: unknown): string {
@@ -162,6 +460,11 @@ function App() {
   const [isLoaded, setIsLoaded] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [infoMessage, setInfoMessage] = useState<string>("");
+  const [metarErrorMessage, setMetarErrorMessage] = useState<string>("");
+  const [metarPayload, setMetarPayload] = useState<MetarPayload | null>(null);
+  const [isMetarBusy, setIsMetarBusy] = useState<boolean>(false);
+  const [lastMetarSyncAt, setLastMetarSyncAt] = useState<number | null>(null);
+  const [sessionId] = useState<string>(createSessionId);
   const [isOnline, setIsOnline] = useState<boolean>(() => window.navigator.onLine);
   const [pollFailureCount, setPollFailureCount] = useState<number>(0);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
@@ -213,6 +516,33 @@ function App() {
     }
   }, []);
 
+  const refreshMetar = useCallback(
+    async (scenarioPath: string, forceRefresh: boolean): Promise<void> => {
+      setIsMetarBusy(true);
+      setMetarErrorMessage("");
+      try {
+        const payload = await getMetar(sessionId, scenarioPath, forceRefresh);
+        setMetarPayload(payload);
+        setLastMetarSyncAt(Date.now());
+        if (payload.source === "web") {
+          appendUiEvent("info", `Live METAR loaded from ${payload.station}.`);
+        } else {
+          appendUiEvent(
+            "warning",
+            `Network METAR unavailable. Generated fallback issued for ${payload.station}.`,
+          );
+        }
+      } catch (error) {
+        const detail = `METAR update failed: ${toErrorMessage(error)}`;
+        setMetarErrorMessage(detail);
+        appendUiEvent("error", detail);
+      } finally {
+        setIsMetarBusy(false);
+      }
+    },
+    [appendUiEvent, sessionId],
+  );
+
   const loadPageData = useCallback(async (): Promise<void> => {
     setIsBusy(true);
     setErrorMessage("");
@@ -242,6 +572,8 @@ function App() {
     }
   }, [appendUiEvent]);
 
+  const selectedScenarioPath = draftSettings?.scenario_path ?? "";
+
   useEffect(() => {
     void loadPageData();
   }, [loadPageData]);
@@ -258,6 +590,25 @@ function App() {
       window.clearInterval(timerId);
     };
   }, [isLoaded, refreshProcess]);
+
+  useEffect(() => {
+    if (!isLoaded || selectedScenarioPath.length === 0) {
+      return;
+    }
+    void refreshMetar(selectedScenarioPath, false);
+  }, [isLoaded, refreshMetar, selectedScenarioPath]);
+
+  useEffect(() => {
+    if (!isLoaded || selectedScenarioPath.length === 0) {
+      return;
+    }
+    const timerId = window.setInterval(() => {
+      void refreshMetar(selectedScenarioPath, true);
+    }, METAR_REFRESH_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [isLoaded, refreshMetar, selectedScenarioPath]);
 
   useEffect(() => {
     const previous = previousPollFailureRef.current;
@@ -320,6 +671,17 @@ function App() {
     }
     return buildScenarioInsights(settingsResponse.available_scenarios);
   }, [settingsResponse]);
+
+  const selectedScenarioInsight = useMemo((): ScenarioInsight | null => {
+    if (selectedScenarioPath.length === 0) {
+      return null;
+    }
+    return scenarioInsights.find((scenario) => scenario.path === selectedScenarioPath) ?? null;
+  }, [scenarioInsights, selectedScenarioPath]);
+
+  const cockpitProfile = useMemo((): CockpitProfile => {
+    return buildCockpitProfile(selectedScenarioInsight, metarPayload);
+  }, [metarPayload, selectedScenarioInsight]);
 
   const readinessLevel = useMemo((): ReadinessLevel => {
     if (!isOnline) {
@@ -488,6 +850,23 @@ function App() {
     return "chip-danger";
   }, [pollFailureCount]);
 
+  const metarSourceLabel = useMemo((): string => {
+    if (metarPayload === null) {
+      return "Pending";
+    }
+    if (metarPayload.source === "web") {
+      return "Live Web METAR";
+    }
+    return "Generated Fallback";
+  }, [metarPayload]);
+
+  const metarSourceClass = useMemo((): string => {
+    if (metarPayload === null) {
+      return "chip-neutral";
+    }
+    return metarPayload.source === "web" ? "chip-live" : "chip-warning";
+  }, [metarPayload]);
+
   if (!isLoaded || draftSettings === null || settingsResponse === null) {
     return (
       <main className="ops-page">
@@ -572,6 +951,86 @@ function App() {
         <article className="metric-card">
           <p className="metric-label">Network</p>
           <p className="metric-value">{isOnline ? "Online" : "Offline"}</p>
+        </article>
+      </section>
+
+      <section className="workspace-grid cockpit-grid">
+        <article className="panel">
+          <div className="panel-header">
+            <h2>Pilot Instrument Cluster</h2>
+            <span className="hint">{cockpitProfile.aircraftName}</span>
+          </div>
+          <p className="status">{cockpitProfile.missionMode}</p>
+          <div className="instrument-grid">
+            {cockpitProfile.gauges.map((gauge) => (
+              <InstrumentDial key={gauge.key} gauge={gauge} />
+            ))}
+          </div>
+        </article>
+
+        <article className="panel metar-panel">
+          <div className="panel-header">
+            <h2>METAR Distraction Feed</h2>
+            <div className="chip-row">
+              <span className={`chip ${metarSourceClass}`}>{metarSourceLabel}</span>
+            </div>
+          </div>
+          <p className="hint">
+            Session ID: <span className="session-id">{sessionId}</span>
+          </p>
+          <p className="hint">
+            Last METAR sync: {formatClock(lastMetarSyncAt)} | Auto-refresh every{" "}
+            {METAR_REFRESH_INTERVAL_MS / 1000} seconds
+          </p>
+          {metarErrorMessage.length > 0 ? <p className="hint error">{metarErrorMessage}</p> : null}
+          {metarPayload !== null ? (
+            <div className="metar-feed">
+              <p className="metar-raw">{metarPayload.metar}</p>
+              <div className="metar-grid">
+                <p>
+                  <strong>Station:</strong> {metarPayload.station}
+                </p>
+                <p>
+                  <strong>Category:</strong> {metarPayload.flight_category}
+                </p>
+                <p>
+                  <strong>Issued:</strong> {metarPayload.issued_at}
+                </p>
+                <p>
+                  <strong>Wind:</strong> {metarPayload.wind_degrees} deg /{" "}
+                  {metarPayload.wind_speed_kt} kt
+                  {metarPayload.gust_kt !== null ? ` G${metarPayload.gust_kt}` : ""}
+                </p>
+                <p>
+                  <strong>Visibility:</strong> {metarPayload.visibility_sm.toFixed(1)} SM
+                </p>
+                <p>
+                  <strong>Ceiling:</strong>{" "}
+                  {metarPayload.ceiling_ft !== null ? `${metarPayload.ceiling_ft} ft` : "none"}
+                </p>
+                <p>
+                  <strong>Temperature:</strong> {metarPayload.temperature_c}C /{" "}
+                  {metarPayload.dewpoint_c}C
+                </p>
+                <p>
+                  <strong>Altimeter:</strong> {metarPayload.altimeter_inhg.toFixed(2)} inHg
+                </p>
+              </div>
+            </div>
+          ) : (
+            <p className="hint">Waiting for METAR input from backend service.</p>
+          )}
+          <div className="action-row">
+            <button
+              type="button"
+              disabled={isBusy || isMetarBusy || selectedScenarioPath.length === 0}
+              onClick={() => {
+                void refreshMetar(selectedScenarioPath, true);
+              }}
+            >
+              {isMetarBusy ? "Refreshing METAR..." : "Refresh METAR"}
+            </button>
+          </div>
         </article>
       </section>
 
@@ -841,6 +1300,10 @@ function App() {
         <h2>Scenario Readback</h2>
         <p className="hint">
           Selected scenario path: <strong>{draftSettings.scenario_path}</strong>
+        </p>
+        <p className="hint">
+          Aircraft gauge preset: <strong>{cockpitProfile.aircraftName}</strong> | METAR source:{" "}
+          <strong>{metarSourceLabel}</strong>
         </p>
         <p className="hint">
           Scenario selection should match mission profile, workload targets, and operator
