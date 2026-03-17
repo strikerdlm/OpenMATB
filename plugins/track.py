@@ -1,72 +1,88 @@
-# Copyright 2023-2024, by Julien Cegarra & Benoît Valéry. All rights reserved.
+# Copyright 2023-2026, by Julien Cegarra & Benoît Valéry. All rights reserved.
 # Institut National Universitaire Champollion (Albi, France).
 # License : CeCILL, version 2.1 (see the LICENSE file)
 
-from math import sin, pi, ceil
-from core.joystick import joystick
-from plugins.abstractplugin import AbstractPlugin
-from core.widgets import Reticle
-from core.container import Container
-from core.constants import Group as G, COLORS as C, FONT_SIZES as F, REPLAY_MODE
+from __future__ import annotations
+
+from collections.abc import Generator
+from math import pi, sin
+from typing import Any, Callable
+
 from core import validation
-from core.window import Window
+from core.constants import COLORS as C
+from core.constants import REPLAY_MODE
+from core.container import Container
+from core.widgets import Reticle
+from plugins.abstractplugin import AbstractPlugin
+
 
 class Track(AbstractPlugin):
-    def __init__(self, label='', taskplacement='topmid', taskupdatetime=20, silent=False):
-        super().__init__(_('Tracking'), taskplacement, taskupdatetime)
+    def __init__(
+        self, label: str = "", taskplacement: str = "topmid", taskupdatetime: int = 20, silent: bool = False
+    ) -> None:
+        super().__init__(_("Tracking"), taskplacement, taskupdatetime)
 
-        self.validation_dict = {
-            'cursorcolor': validation.is_color,
-            'cursorcoloroutside': validation.is_color,
-            'targetproportion': validation.is_in_unit_interval,
-            'joystickforce': validation.is_natural_integer,
-            'inverseaxis': validation.is_boolean}
+        self.validation_dict: dict[str, Callable[..., Any]] = {
+            "cursorcolor": validation.is_color,
+            "cursorcoloroutside": validation.is_color,
+            "targetproportion": validation.is_in_unit_interval,
+            "joystickforce": validation.is_natural_integer,
+            "inverseaxis": validation.is_boolean,
+        }
 
-        new_par = dict(cursorcolor=C['BLACK'], cursorcoloroutside=C['RED'], automaticsolver=False,
-                       displayautomationstate=True, targetproportion=0.25, joystickforce=1,
-                       inverseaxis=False)
+        new_par: dict[str, Any] = dict(
+            cursorcolor=C["BLACK"],
+            cursorcoloroutside=C["RED"],
+            automaticsolver=False,
+            displayautomationstate=True,
+            targetproportion=0.25,
+            joystickforce=1,
+            inverseaxis=False,
+        )
         self.parameters.update(new_par)
 
-        self.automode_position = (0.35, 0.1)
-        self.cursor_path_gen = iter(self.compute_next_cursor_position())
-        self.cursor_position = None
-        self.cursor_color_key = 'cursorcolor'
-        self.gain_ratio = 0.8  # The proportion of the reticle area the cursor should cover
-        self.response_time = 0
-        self.x_input, self.y_input = 0, 0
+        self.automode_position: tuple[float, float] = (0.35, 0.1)
+        self.cursor_path_gen: Generator[tuple[float, float], None, None] = iter(self.compute_next_cursor_position())
+        self.cursor_position: tuple[float, float] | None = None
+        self.cursor_color_key: str = "cursorcolor"
+        self.gain_ratio: float = 0.8  # The proportion of the reticle area the cursor should cover
+        self.response_time: int = 0
+        self.x_input: float = 0
+        self.y_input: float = 0
 
-
-    def get_response_timers(self):
+    def get_response_timers(self) -> list[int]:
         return [self.response_time]
 
-
-    def create_widgets(self):
+    def create_widgets(self) -> None:
         super().create_widgets()
 
         # Compute the reticle widget coordinates (left, bottom, width, height)
-        b = self.task_container.b + self.task_container.h * 0.1
-        h = w = self.task_container.h*0.8
-        l = self.task_container.l + self.task_container.w/2 - w/2
+        b: float = self.task_container.b + self.task_container.h * 0.1
+        h: float = self.task_container.h * 0.8
+        w: float = h
+        l: float = self.task_container.l + self.task_container.w / 2 - w / 2
 
-        self.add_widget('reticle', Reticle, container=Container('reticle', l, b, w, h),
-                       target_proportion=self.parameters['targetproportion'],
-                       cursorcolor=self.parameters['cursorcolor'])
-        self.reticle = self.widgets['track_reticle']
+        self.add_widget(
+            "reticle",
+            Reticle,
+            container=Container("reticle", l, b, w, h),
+            target_proportion=self.parameters["targetproportion"],
+            cursorcolor=self.parameters["cursorcolor"],
+        )
+        self.reticle: Any = self.widgets["track_reticle"]
 
         # Compute cursor movement constraints as soon as the reticle is created
-        self.reticle_container = self.reticle.container
-        self.xgain = (self.reticle_container.w * self.gain_ratio)/2
-        self.ygain = (self.reticle_container.h * self.gain_ratio)/2
+        self.reticle_container: Container = self.reticle.container
+        self.xgain: float = (self.reticle_container.w * self.gain_ratio) / 2
+        self.ygain: float = (self.reticle_container.h * self.gain_ratio) / 2
         self.cursor_position = next(self.cursor_path_gen)
 
-
-    def get_joystick_inputs(self, x, y):
+    def get_joystick_inputs(self, x: float, y: float) -> None:
         # Called by the scheduler (which distribute joystick inputs to plugins) at each update
         self.x_input = x
         self.y_input = y
 
-
-    def compute_next_plugin_state(self):
+    def compute_next_plugin_state(self) -> None:
         if not super().compute_next_plugin_state():
             return
 
@@ -75,63 +91,65 @@ class Track(AbstractPlugin):
         if not REPLAY_MODE:
             self.cursor_position = next(self.cursor_path_gen)
 
-        self.cursor_color_key = 'cursorcolor' if self.reticle.is_cursor_in_target() \
-                    else 'cursorcoloroutside'
-        self.log_performance('cursor_in_target', self.reticle.is_cursor_in_target())
-        self.log_performance('center_deviation', self.reticle.return_deviation())
+        self.cursor_color_key = "cursorcolor" if self.reticle.is_cursor_in_target() else "cursorcoloroutside"
+        self.log_performance("cursor_in_target", self.reticle.is_cursor_in_target())
+        self.log_performance("center_deviation", self.reticle.return_deviation())
 
         if not self.reticle.is_cursor_in_target():  # A response is needed
-            self.response_time += self.parameters['taskupdatetime']
+            self.response_time += self.parameters["taskupdatetime"]
         else:
             if self.response_time > 0:  # The cursor drift has been recovered
-                self.log_performance('response_time', self.response_time)
+                self.log_performance("response_time", self.response_time)
                 self.response_time = 0
 
-
-    def refresh_widgets(self):
+    def refresh_widgets(self) -> None:
         if not super().refresh_widgets():
             return
         self.reticle.set_cursor_position(*self.cursor_position)
         self.reticle.set_cursor_color(self.parameters[self.cursor_color_key])
-        self.reticle.set_target_proportion(self.parameters['targetproportion'])
+        self.reticle.set_target_proportion(self.parameters["targetproportion"])
 
-
-    def compute_next_cursor_position(self):
+    def compute_next_cursor_position(self) -> Generator[tuple[float, float], None, None]:
         # Adapted from Comstock et al., (1992) : the first MATB documentation
-        xsin, ysin = 0, 0
-        xincr, yincr = 0.005, 0.006  # Cursor (x, y) asynchroneous speeds
+        xsin: float = 0
+        ysin: float = 0
+        xincr: float = 0.005
+        yincr: float = 0.006  # Cursor (x, y) asynchroneous speeds
 
-        cursorx, cursory = 0, 0
-        moffx, moffy = 0, 0
+        cursorx: float = 0
+        cursory: float = 0
+        moffx: float = 0
+        moffy: float = 0
 
         while True:
             # Must wait the drawing of the reticle to evaluate x & y gain
-            if f'{self.alias}_reticle' in self.widgets.keys():
-                xsin = xsin + xincr if xsin < 2*pi else 0
-                ysin = ysin + yincr if ysin < 2*pi else 0
+            if f"{self.alias}_reticle" in self.widgets:
+                xsin = xsin + xincr if xsin < 2 * pi else 0
+                ysin = ysin + yincr if ysin < 2 * pi else 0
 
                 cursorx = sin(xsin) * self.xgain
                 cursory = sin(ysin) * self.ygain
 
-                compx, compy = 0, 0
+                compx: float = 0
+                compy: float = 0
                 # Potential compensations of cursor movement
                 # If the automode is enabled, apply automatic compensation to the cursor drift
-                if self.parameters['automaticsolver'] == True:
-                    autocompx = 1 if -self.reticle.cursor_relative[0] >= 0 else -1
-                    autocompy = 1 if -self.reticle.cursor_relative[1] >= 0 else -1
+                if self.parameters["automaticsolver"]:
+                    autocompx: int = 1 if -self.reticle.cursor_relative[0] >= 0 else -1
+                    autocompy: int = 1 if -self.reticle.cursor_relative[1] >= 0 else -1
                 else:
                     autocompx = 0
                     autocompy = 0
 
                 # Else if a manual input (joystick) is recorded, apply its offset to the cursor,
                 # as a function of its gain
-                if self.parameters['inverseaxis'] == False:
+                if not self.parameters["inverseaxis"]:
                     compx, compy = self.x_input, -self.y_input
                 else:
                     compx, compy = -self.x_input, self.y_input
 
-                compx = autocompx + compx * self.parameters['joystickforce']
-                compy = autocompy + compy * self.parameters['joystickforce']
+                compx = autocompx + compx * self.parameters["joystickforce"]
+                compy = autocompy + compy * self.parameters["joystickforce"]
 
                 moffx = moffx + compx
                 moffy = moffy + compy
@@ -139,22 +157,22 @@ class Track(AbstractPlugin):
                 cursorx = cursorx + moffx
                 cursory = cursory + moffy
 
-                limitx = min(max(cursorx, -self.reticle.container.w/2), self.reticle.container.w/2)
-                limity = min(max(cursory, -self.reticle.container.h/2), self.reticle.container.h/2)
+                limitx: float = min(max(cursorx, -self.reticle.container.w / 2), self.reticle.container.w / 2)
+                limity: float = min(max(cursory, -self.reticle.container.h / 2), self.reticle.container.h / 2)
 
                 # If outside reticle limits, compensate cursor position
                 # Neutralize the joystick only if it does not go toward the center
                 if limitx != cursorx:
-                    diff = cursorx-limitx
+                    diff: float = cursorx - limitx
                     cursorx -= diff
-                    if compx !=0 and diff/compx > 0:  # Same sign
-                        moffx -= (diff + compx * self.parameters['joystickforce'])
+                    if compx != 0 and diff / compx > 0:  # Same sign
+                        moffx -= diff + compx * self.parameters["joystickforce"]
 
                 if limity != cursory:
-                    diff = cursory-limity
+                    diff = cursory - limity
                     cursory -= diff
-                    if compy !=0 and diff/compy > 0:  # Same sign
-                        moffy -= (diff + compy * self.parameters['joystickforce'])
+                    if compy != 0 and diff / compy > 0:  # Same sign
+                        moffy -= diff + compy * self.parameters["joystickforce"]
                 yield (cursorx, cursory)
             else:
                 yield (0, 0)

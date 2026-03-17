@@ -1,20 +1,20 @@
-# Copyright 2023, by Julien Cegarra & Benoît Valéry. All rights reserved.
+# Copyright 2023-2026, by Julien Cegarra & Benoît Valéry. All rights reserved.
 # Institut National Universitaire Champollion (Albi, France).
 # License : CeCILL, version 2.1 (see the LICENSE file)
 
-from .abstractwidget import AbstractWidget
-from .button import PlayPause
-from .scale import Scale
-from .light import Light
-from .reticle import Reticle
-from .tank import Tank
-from .pumpflow import PumpFlow
-from .schedule import Schedule
-from .radio import Radio
-from .pump import Pump
-from .timeline import Timeline
-from .simpletext import Simpletext
-from .simplehtml import SimpleHTML
-from .slider import Slider
-from .frame import Frame
-from .performancescale import Performancescale
+from .abstractwidget import AbstractWidget  # noqa: F401
+from .button import MuteButton, PlayPause  # noqa: F401
+from .frame import Frame  # noqa: F401
+from .light import Light  # noqa: F401
+from .performancescale import Performancescale  # noqa: F401
+from .pump import Pump  # noqa: F401
+from .pumpflow import PumpFlow  # noqa: F401
+from .radio import Radio  # noqa: F401
+from .reticle import Reticle  # noqa: F401
+from .scale import Scale  # noqa: F401
+from .schedule import Schedule  # noqa: F401
+from .simplehtml import SimpleHTML  # noqa: F401
+from .simpletext import Simpletext  # noqa: F401
+from .slider import Slider  # noqa: F401
+from .tank import Tank  # noqa: F401
+from .timeline import Timeline  # noqa: F401
