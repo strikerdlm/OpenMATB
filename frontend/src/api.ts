@@ -9,6 +9,8 @@ import type {
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
 const GET_REQUEST_RETRY_COUNT = 2;
 const RETRY_BACKOFF_MS = 350;
+const TRUSTED_CLIENT_HEADER_NAME = "X-OpenMATB-Client";
+const TRUSTED_CLIENT_HEADER_VALUE = "web-launcher-ui";
 
 function sleep(delayMs: number): Promise<void> {
   return new Promise((resolve) => {
@@ -142,6 +144,7 @@ export async function saveSettings(
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
+      [TRUSTED_CLIENT_HEADER_NAME]: TRUSTED_CLIENT_HEADER_VALUE,
     },
     body: JSON.stringify(settings),
   });
@@ -158,6 +161,9 @@ export async function getProcess(): Promise<ProcessSnapshot> {
 export async function postAction(action: string): Promise<ProcessSnapshot> {
   return requestJson<ProcessSnapshot>(`/api/actions/${action}`, {
     method: "POST",
+    headers: {
+      [TRUSTED_CLIENT_HEADER_NAME]: TRUSTED_CLIENT_HEADER_VALUE,
+    },
   });
 }
 

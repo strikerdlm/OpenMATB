@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Final, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -64,6 +64,8 @@ ALLOWED_DEV_ORIGINS: Final[tuple[str, ...]] = (
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 )
+TRUSTED_CLIENT_HEADER_NAME: Final[str] = "x-openmatb-client"
+TRUSTED_CLIENT_HEADER_VALUE: Final[str] = "web-launcher-ui"
 
 
 class SettingsPayload(BaseModel):
@@ -785,6 +787,13 @@ def _build_settings_response(config_service: ConfigService) -> SettingsResponse:
     )
 
 
+def _require_trusted_client_header(request: Request) -> None:
+    """Reject browser-triggered mutating requests without trusted marker header."""
+    provided_value = request.headers.get(TRUSTED_CLIENT_HEADER_NAME, "").strip()
+    if provided_value != TRUSTED_CLIENT_HEADER_VALUE:
+        raise HTTPException(status_code=403, detail="Missing trusted client marker header.")
+
+
 app = FastAPI(title="OpenMATB Web Launcher API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -812,8 +821,9 @@ def get_settings() -> SettingsResponse:
 
 
 @app.put("/api/settings", response_model=SettingsResponse)
-def put_settings(settings: SettingsPayload) -> SettingsResponse:
+def put_settings(settings: SettingsPayload, request: Request) -> SettingsResponse:
     """Validate and persist launcher settings."""
+    _require_trusted_client_header(request)
     available_languages = config_service.discover_languages()
     available_scenarios = config_service.discover_scenarios()
     validated = _validate_settings(
@@ -865,8 +875,9 @@ def get_process() -> ProcessSnapshot:
 
 
 @app.post("/api/actions/{action}", response_model=ProcessSnapshot)
-def post_action(action: str) -> ProcessSnapshot:
+def post_action(action: str, request: Request) -> ProcessSnapshot:
     """Start a launcher action or stop the running process."""
+    _require_trusted_client_header(request)
     normalized = action.strip().lower()
     if normalized == "stop":
         return process_manager.stop_process()
