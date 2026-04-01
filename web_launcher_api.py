@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Final, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -63,6 +63,13 @@ ACTION_COMMANDS: Final[dict[str, tuple[str, ...]]] = {
 ALLOWED_DEV_ORIGINS: Final[tuple[str, ...]] = (
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+)
+TRUSTED_BROWSER_ORIGINS: Final[frozenset[str]] = frozenset(
+    (
+        *ALLOWED_DEV_ORIGINS,
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    )
 )
 
 
@@ -785,6 +792,20 @@ def _build_settings_response(config_service: ConfigService) -> SettingsResponse:
     )
 
 
+def _enforce_trusted_browser_origin(request: Request) -> None:
+    """Reject cross-site browser writes while allowing non-browser clients."""
+    origin = request.headers.get("origin")
+    if origin is None:
+        return
+    normalized_origin = origin.strip().rstrip("/")
+    if normalized_origin in TRUSTED_BROWSER_ORIGINS:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Cross-site origin is not allowed for state-changing requests.",
+    )
+
+
 app = FastAPI(title="OpenMATB Web Launcher API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -812,8 +833,9 @@ def get_settings() -> SettingsResponse:
 
 
 @app.put("/api/settings", response_model=SettingsResponse)
-def put_settings(settings: SettingsPayload) -> SettingsResponse:
+def put_settings(request: Request, settings: SettingsPayload) -> SettingsResponse:
     """Validate and persist launcher settings."""
+    _enforce_trusted_browser_origin(request)
     available_languages = config_service.discover_languages()
     available_scenarios = config_service.discover_scenarios()
     validated = _validate_settings(
@@ -865,8 +887,9 @@ def get_process() -> ProcessSnapshot:
 
 
 @app.post("/api/actions/{action}", response_model=ProcessSnapshot)
-def post_action(action: str) -> ProcessSnapshot:
+def post_action(action: str, request: Request) -> ProcessSnapshot:
     """Start a launcher action or stop the running process."""
+    _enforce_trusted_browser_origin(request)
     normalized = action.strip().lower()
     if normalized == "stop":
         return process_manager.stop_process()
