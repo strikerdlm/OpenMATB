@@ -380,10 +380,6 @@ function validateDraftSettings(
     errors.push(`Screen index must be between 0 and ${MAX_SCREEN_INDEX}.`);
   }
 
-  if (draftSettings.font_name.trim().length === 0) {
-    errors.push("Font name cannot be empty.");
-  }
-
   return errors;
 }
 
